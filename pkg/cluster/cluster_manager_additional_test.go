@@ -4,6 +4,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -320,6 +322,142 @@ func TestBuildClientSet(t *testing.T) {
 		}
 		if got.Name != "cluster-b" {
 			t.Fatalf("buildClientSet() = %#v, want cluster name %q", got, "cluster-b")
+		}
+	})
+
+	t.Run("uses file source kubeconfig with context", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config")
+		content := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: test
+`
+		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+			t.Fatalf("write kubeconfig file: %v", err)
+		}
+
+		restoreInCluster := stubCreateClientSetInCluster(func(name, prometheusURL string) (*ClientSet, error) {
+			t.Fatalf("createClientSetInCluster() unexpectedly called with name=%q prometheusURL=%q", name, prometheusURL)
+			return nil, nil
+		})
+		defer restoreInCluster()
+
+		fromConfigCalled := false
+		restoreFromConfig := stubCreateClientSetFromConfig(func(name, kubeconfig, prometheusURL string) (*ClientSet, error) {
+			fromConfigCalled = true
+			if name != "cluster-c" {
+				t.Fatalf("name = %q, want %q", name, "cluster-c")
+			}
+			if !strings.Contains(kubeconfig, "current-context: dev") {
+				t.Fatalf("kubeconfig did not contain expected current-context, got: %s", kubeconfig)
+			}
+			return &ClientSet{Name: name}, nil
+		})
+		defer restoreFromConfig()
+
+		got, err := buildClientSet(&model.Cluster{
+			Name:          "cluster-c",
+			ConfigSource:  "file",
+			ConfigPath:    configPath,
+			ConfigContext: "dev",
+			PrometheusURL: "http://prometheus",
+		})
+		if err != nil {
+			t.Fatalf("buildClientSet() error = %v", err)
+		}
+		if !fromConfigCalled {
+			t.Fatalf("createClientSetFromConfig() was not called")
+		}
+		if got.configSource != "file" {
+			t.Fatalf("configSource = %q, want %q", got.configSource, "file")
+		}
+		if got.configPath == "" {
+			t.Fatalf("expected configPath to be set")
+		}
+		if got.configFingerprint == "" {
+			t.Fatalf("expected configFingerprint to be set")
+		}
+	})
+}
+
+func TestResolveClusterConfigFromFile(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "kubeconfig")
+	content := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: test
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write kubeconfig file: %v", err)
+	}
+
+	t.Run("loads file config with fingerprint", func(t *testing.T) {
+		cluster := &model.Cluster{
+			ConfigSource:  "file",
+			ConfigPath:    configPath,
+			ConfigContext: "dev",
+		}
+		config, fingerprint, err := resolveClusterConfig(cluster)
+		if err != nil {
+			t.Fatalf("resolveClusterConfig() error = %v", err)
+		}
+		if !strings.Contains(config, "current-context: dev") {
+			t.Fatalf("resolved kubeconfig does not contain expected context")
+		}
+		if !strings.HasPrefix(fingerprint, "file:") {
+			t.Fatalf("fingerprint = %q, expected file fingerprint", fingerprint)
+		}
+	})
+
+	t.Run("fails when context does not exist", func(t *testing.T) {
+		cluster := &model.Cluster{
+			ConfigSource:  "file",
+			ConfigPath:    configPath,
+			ConfigContext: "missing",
+		}
+		_, _, err := resolveClusterConfig(cluster)
+		if err == nil {
+			t.Fatal("expected error for missing context, got nil")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("error = %v, want missing context hint", err)
+		}
+	})
+
+	t.Run("fails for missing file", func(t *testing.T) {
+		cluster := &model.Cluster{
+			ConfigSource: "file",
+			ConfigPath:   filepath.Join(tempDir, "not-exist-config"),
+		}
+		_, _, err := resolveClusterConfig(cluster)
+		if err == nil {
+			t.Fatal("expected error for missing file, got nil")
 		}
 	})
 }

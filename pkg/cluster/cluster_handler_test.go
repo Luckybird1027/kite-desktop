@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/eryajf/kite-desktop/pkg/common"
 	"github.com/eryajf/kite-desktop/pkg/model"
 	"github.com/gin-gonic/gin"
 )
@@ -168,5 +171,96 @@ func TestTestClusterConnectionReturnsReadableError(t *testing.T) {
 	}
 	if response.ErrorDetail == "" {
 		t.Fatalf("expected errorDetail, got empty response: %+v", response)
+	}
+}
+
+func TestTestClusterConnectionFileSource(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalTester := clusterConnectionTester
+	originalDesktopMode := common.DesktopLocalMode
+	t.Cleanup(func() {
+		clusterConnectionTester = originalTester
+		common.DesktopLocalMode = originalDesktopMode
+	})
+	common.DesktopLocalMode = true
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config")
+	content := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: test
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write kubeconfig file: %v", err)
+	}
+
+	clusterConnectionTester = func(cluster *model.Cluster) (*ClientSet, error) {
+		if cluster.ConfigSource != "file" {
+			t.Fatalf("cluster.ConfigSource = %q, want %q", cluster.ConfigSource, "file")
+		}
+		if cluster.ConfigPath != configPath {
+			t.Fatalf("cluster.ConfigPath = %q, want %q", cluster.ConfigPath, configPath)
+		}
+		if cluster.ConfigContext != "dev" {
+			t.Fatalf("cluster.ConfigContext = %q, want %q", cluster.ConfigContext, "dev")
+		}
+		return &ClientSet{Version: "v1.30.0"}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clusters/test",
+		strings.NewReader(`{"name":"demo","configSource":"file","configPath":"`+configPath+`","configContext":"dev"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	(&ClusterManager{}).TestClusterConnection(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+}
+
+func TestTestClusterConnectionRejectsFileSourceOutsideDesktop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalDesktopMode := common.DesktopLocalMode
+	t.Cleanup(func() {
+		common.DesktopLocalMode = originalDesktopMode
+	})
+	common.DesktopLocalMode = false
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/admin/clusters/test",
+		strings.NewReader(`{"name":"demo","configSource":"file","configPath":"C:/Users/demo/.kube/config"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	(&ClusterManager{}).TestClusterConnection(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "desktop-local") {
+		t.Fatalf("body = %s, expected desktop-local guardrail", recorder.Body.String())
 	}
 }

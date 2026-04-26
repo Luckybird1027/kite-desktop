@@ -122,6 +122,24 @@ Copies text via the native clipboard.
 
 Imports kubeconfig content, or opens the native file dialog when content is omitted.
 
+### `POST /api/v1/admin/clusters/source-reload`
+
+Desktop-oriented recovery endpoint for file-based kubeconfig clusters.
+
+- request body:
+
+```json
+{
+  "name": "cluster-name"
+}
+```
+
+- behavior:
+  - compares current in-memory file fingerprint with the latest kubeconfig file fingerprint
+  - if unchanged, returns without rebuilding
+  - if changed, triggers cluster sync/rebuild and returns reconnect result
+  - intended for "retry after connection error" flows in desktop runtime
+
 ## UI Rules
 
 The UI should not directly depend on browser-only behavior for desktop actions.
@@ -133,6 +151,11 @@ Desktop-sensitive actions must go through `ui/src/lib/desktop.ts`, including:
 - downloading files
 - opening config or logs directories
 - clipboard copy when native bridge is available
+
+For file-based kubeconfig clusters in desktop runtime:
+
+- cluster setting supports `configSource=file` + `configPath` (+ optional `configContext`)
+- runtime recovery should call `/api/v1/admin/clusters/source-reload` when connection failures suggest kubeconfig drift
 
 ## Data Directories
 

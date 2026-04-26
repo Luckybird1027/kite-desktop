@@ -67,12 +67,21 @@
 
 - 桌面模式默认把数据存到用户本地配置目录下的 `Kite/`。
 - 默认 SQLite 路径是 `Kite/kite.db`，除非显式设置了 `DB_DSN`。
+- 集群配置支持两种来源：
+  - `inline`：数据库中存储 kubeconfig 文本（兼容旧逻辑）
+  - `file`：桌面模式下通过 `configPath`（可选 `configContext`）引用本地 kubeconfig 文件
 - 收藏、侧边栏偏好这类桌面本地偏好应优先走后端偏好接口并持久化到 SQLite。
 - 前端仍会通过 `localStorage` 保存一部分轻量状态或迁移标记，很多时候还会按当前集群做分桶。
 - 修改本地状态逻辑时，必须同时考虑：
   - 集群切换后的行为
   - 应用重启后的持久化
   - 内存状态与本地存储之间是否会不一致
+
+涉及文件来源 kubeconfig 的连接自愈时，优先复用：
+
+- `POST /api/v1/admin/clusters/source-reload`
+  - 仅在检测到连接异常时触发
+  - 先比对文件指纹，再决定是否重建 client
 
 ## 6. 标准开发命令
 

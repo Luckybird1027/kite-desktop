@@ -27,9 +27,41 @@ vi.mock('react-i18next', async (importOriginal) => {
   }
 })
 
+const openNativeFileMock = vi.fn()
+vi.mock('@/lib/desktop', () => ({
+  openNativeFile: (...args: unknown[]) => openNativeFileMock(...args),
+}))
+
 import { ClusterDialog } from './cluster-dialog'
 
 beforeEach(() => {
+  openNativeFileMock.mockReset()
+
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+      configurable: true,
+      value: () => false,
+    })
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
+      configurable: true,
+      value: () => {},
+    })
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
+      configurable: true,
+      value: () => {},
+    })
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    })
+  }
+
   class ResizeObserverMock {
     observe() {}
     unobserve() {}
@@ -101,5 +133,70 @@ describe('ClusterDialog', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Add Cluster' })).toBeDisabled()
     )
+  })
+
+  it('requires kubeconfig path when config source is file', async () => {
+    const user = userEvent.setup()
+    const onTestConnection = vi
+      .fn()
+      .mockResolvedValue({ message: 'ok', version: 'v1.30.0' })
+
+    render(
+      <ClusterDialog
+        open
+        onOpenChange={() => {}}
+        onSubmit={() => {}}
+        onTestConnection={onTestConnection}
+      />
+    )
+
+    await user.type(screen.getByLabelText('Cluster Name *'), 'dev-cluster')
+    await user.click(screen.getAllByRole('combobox')[1])
+    const configSourceOptions = await screen.findAllByText(
+      'Use local kubeconfig file'
+    )
+    await user.click(configSourceOptions[1] ?? configSourceOptions[0])
+
+    expect(screen.queryByLabelText('Kubeconfig *')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Kubeconfig File *')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Test Connection' })
+    ).toBeDisabled()
+
+    await user.type(
+      screen.getByLabelText('Kubeconfig File *'),
+      'C:/Users/demo/.kube/config'
+    )
+    expect(screen.getByRole('button', { name: 'Test Connection' })).toBeEnabled()
+  })
+
+  it('fills kubeconfig path from native file picker', async () => {
+    const user = userEvent.setup()
+    openNativeFileMock.mockResolvedValue({
+      canceled: false,
+      path: 'C:/Users/demo/.kube/config',
+    })
+
+    render(
+      <ClusterDialog
+        open
+        onOpenChange={() => {}}
+        onSubmit={() => {}}
+        onTestConnection={vi.fn()}
+      />
+    )
+
+    await user.click(screen.getAllByRole('combobox')[1])
+    const configSourceOptions = await screen.findAllByText(
+      'Use local kubeconfig file'
+    )
+    await user.click(configSourceOptions[1] ?? configSourceOptions[0])
+    await user.click(screen.getByRole('button', { name: 'Browse' }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Kubeconfig File *')).toHaveValue(
+        'C:/Users/demo/.kube/config'
+      )
+    })
   })
 })

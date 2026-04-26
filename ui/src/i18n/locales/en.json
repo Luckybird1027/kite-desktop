@@ -740,6 +740,8 @@
         "invalidConfig": "The kubeconfig is invalid or incomplete. Please check the cluster, user, and context configuration.",
         "inClusterUnavailable": "In-cluster configuration is unavailable in the current environment."
       },
+      "sourceReloadReconnected": "Detected kubeconfig file update and reconnected cluster.",
+      "sourceReloadFailed": "Kubeconfig file changed, but reconnection failed. Please verify your local cluster status.",
       "createError": "Failed to create cluster",
       "updateError": "Failed to update cluster",
       "deleteError": "Failed to delete cluster"
@@ -766,8 +768,23 @@
         "label": "Kubeconfig",
         "editNote": "Leave empty to keep current configuration"
       },
+      "configSource": {
+        "label": "Config Source",
+        "inline": "Paste kubeconfig text",
+        "file": "Use local kubeconfig file"
+      },
       "kubeconfig": {
         "placeholder": "Paste your kubeconfig content here..."
+      },
+      "kubeconfigFile": {
+        "title": "Select kubeconfig file",
+        "pickFailed": "No file path was returned.",
+        "path": "Kubeconfig File",
+        "placeholder": "Absolute path to kubeconfig file",
+        "browse": "Browse",
+        "context": "Kubeconfig Context (optional)",
+        "contextPlaceholder": "Leave empty to use current-context in file",
+        "contextHelp": "Optional. Select a specific context from the kubeconfig file. Leave empty to use current-context."
       },
       "prometheusURL": {
         "label": "Prometheus URL",

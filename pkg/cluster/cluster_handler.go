@@ -23,10 +23,17 @@ type clusterRequest struct {
 	Name          string `json:"name"`
 	Description   string `json:"description"`
 	Config        string `json:"config"`
+	ConfigSource  string `json:"configSource"`
+	ConfigPath    string `json:"configPath"`
+	ConfigContext string `json:"configContext"`
 	PrometheusURL string `json:"prometheusURL"`
 	InCluster     bool   `json:"inCluster"`
 	IsDefault     bool   `json:"isDefault"`
 	Enabled       bool   `json:"enabled"`
+}
+
+type clusterSourceReloadRequest struct {
+	Name string `json:"name"`
 }
 
 var clusterConnectionTester = validateClusterConnection
@@ -91,6 +98,9 @@ func (cm *ClusterManager) GetClusterList(c *gin.Context) {
 			"id":            cluster.ID,
 			"name":          cluster.Name,
 			"description":   cluster.Description,
+			"configSource":  normalizeConfigSource(cluster.ConfigSource),
+			"configPath":    cluster.ConfigPath,
+			"configContext": cluster.ConfigContext,
 			"enabled":       cluster.Enable,
 			"inCluster":     cluster.InCluster,
 			"isDefault":     cluster.IsDefault,
@@ -132,6 +142,27 @@ func (cm *ClusterManager) CreateCluster(c *gin.Context) {
 		return
 	}
 
+	source := normalizeConfigSource(req.ConfigSource)
+	configPath := strings.TrimSpace(req.ConfigPath)
+	configContext := strings.TrimSpace(req.ConfigContext)
+	config := strings.TrimSpace(req.Config)
+	if !req.InCluster {
+		if source == clusterConfigSourceInline && config == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "config is required when configSource is inline"})
+			return
+		}
+		if source == clusterConfigSourceFile {
+			if !common.DesktopLocalMode {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configSource=file is only supported in desktop-local runtime"})
+				return
+			}
+			if configPath == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configPath is required when configSource is file"})
+				return
+			}
+		}
+	}
+
 	if req.IsDefault {
 		if err := model.ClearDefaultCluster(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -142,7 +173,10 @@ func (cm *ClusterManager) CreateCluster(c *gin.Context) {
 	cluster := &model.Cluster{
 		Name:          req.Name,
 		Description:   req.Description,
-		Config:        model.SecretString(req.Config),
+		Config:        model.SecretString(config),
+		ConfigSource:  source,
+		ConfigPath:    configPath,
+		ConfigContext: configContext,
 		PrometheusURL: req.PrometheusURL,
 		InCluster:     req.InCluster,
 		IsDefault:     req.IsDefault,
@@ -202,12 +236,34 @@ func (cm *ClusterManager) UpdateCluster(c *gin.Context) {
 		"enable":         req.Enabled,
 	}
 
+	source := normalizeConfigSource(req.ConfigSource)
+	configPath := strings.TrimSpace(req.ConfigPath)
+	configContext := strings.TrimSpace(req.ConfigContext)
+	if !req.InCluster {
+		if source == clusterConfigSourceFile {
+			if !common.DesktopLocalMode {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configSource=file is only supported in desktop-local runtime"})
+				return
+			}
+			if configPath == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configPath is required when configSource is file"})
+				return
+			}
+		}
+	}
+	updates["config_source"] = source
+	updates["config_path"] = configPath
+	updates["config_context"] = configContext
+
 	if req.Name != "" && req.Name != cluster.Name {
 		updates["name"] = req.Name
 	}
 
-	if req.Config != "" {
+	if source == clusterConfigSourceInline && strings.TrimSpace(req.Config) != "" {
 		updates["config"] = model.SecretString(req.Config)
+	}
+	if source == clusterConfigSourceFile {
+		updates["config"] = model.SecretString("")
 	}
 
 	if err := model.UpdateCluster(cluster, updates); err != nil {
@@ -283,7 +339,12 @@ func buildClusterRESTConfig(cluster *model.Cluster) (*rest.Config, error) {
 		return rest.InClusterConfig()
 	}
 
-	return clientcmd.RESTConfigFromKubeConfig([]byte(cluster.Config))
+	content, _, err := resolveClusterConfig(cluster)
+	if err != nil {
+		return nil, err
+	}
+
+	return clientcmd.RESTConfigFromKubeConfig([]byte(content))
 }
 
 func formatClusterConnectionError(err error) error {
@@ -385,10 +446,25 @@ func (cm *ClusterManager) TestClusterConnection(c *gin.Context) {
 		return
 	}
 
+	source := normalizeConfigSource(req.ConfigSource)
 	config := strings.TrimSpace(req.Config)
-	if !req.InCluster && config == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "config is required when inCluster is false"})
-		return
+	configPath := strings.TrimSpace(req.ConfigPath)
+	configContext := strings.TrimSpace(req.ConfigContext)
+	if !req.InCluster {
+		if source == clusterConfigSourceInline && config == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "config is required when configSource is inline"})
+			return
+		}
+		if source == clusterConfigSourceFile {
+			if !common.DesktopLocalMode {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configSource=file is only supported in desktop-local runtime"})
+				return
+			}
+			if configPath == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "configPath is required when configSource is file"})
+				return
+			}
+		}
 	}
 
 	clusterName := strings.TrimSpace(req.Name)
@@ -399,6 +475,9 @@ func (cm *ClusterManager) TestClusterConnection(c *gin.Context) {
 	cluster := &model.Cluster{
 		Name:          clusterName,
 		Config:        model.SecretString(config),
+		ConfigSource:  source,
+		ConfigPath:    configPath,
+		ConfigContext: configContext,
 		PrometheusURL: strings.TrimSpace(req.PrometheusURL),
 		InCluster:     req.InCluster,
 	}
@@ -415,6 +494,99 @@ func (cm *ClusterManager) TestClusterConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "cluster connection successful",
 		"version": cs.Version,
+	})
+}
+
+func (cm *ClusterManager) ReloadClusterFromSource(c *gin.Context) {
+	var req clusterSourceReloadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	clusterName := strings.TrimSpace(req.Name)
+	if clusterName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	clusterModel, err := model.GetClusterByName(clusterName)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "cluster not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if normalizeConfigSource(clusterModel.ConfigSource) != clusterConfigSourceFile {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":      false,
+			"changed": false,
+			"message": "cluster does not use file-based kubeconfig",
+		})
+		return
+	}
+
+	current, hasCurrent := cm.clusters[clusterName]
+	currentFingerprint := ""
+	if hasCurrent {
+		currentFingerprint = current.configFingerprint
+	}
+
+	nextFingerprint, err := kubeconfigFileFingerprint(clusterModel.ConfigPath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":      false,
+			"changed": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if nextFingerprint == currentFingerprint {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":      true,
+			"changed": false,
+			"message": "kubeconfig file is unchanged",
+		})
+		return
+	}
+
+	if err := requestClusterSync(true); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"ok":      false,
+			"changed": true,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if errMsg, exists := cm.errors[clusterName]; exists {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"ok":      false,
+			"changed": true,
+			"error":   errMsg,
+		})
+		return
+	}
+
+	latest, ok := cm.clusters[clusterName]
+	if !ok {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"ok":      false,
+			"changed": true,
+			"error":   "cluster client not available after reload",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":          true,
+		"changed":     latest.configFingerprint != currentFingerprint,
+		"reconnected": true,
+		"version":     latest.Version,
 	})
 }
 

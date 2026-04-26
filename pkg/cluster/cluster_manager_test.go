@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/eryajf/kite-desktop/pkg/kube"
@@ -152,5 +154,60 @@ func Test_shouldUpdateCluster(t *testing.T) {
 		}
 		got := shouldUpdateCluster(cs, cluster)
 		assert.False(t, got, "expected no update when all the same")
+	})
+
+	t.Run("file source unchanged fingerprint, skip update", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config")
+		content := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: test
+`
+		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config file: %v", err)
+		}
+		fingerprint, err := kubeconfigFileFingerprint(configPath)
+		if err != nil {
+			t.Fatalf("kubeconfigFileFingerprint() error = %v", err)
+		}
+
+		restore := stubServerVersionFetcher(func(_ *kube.K8sClient) (string, error) {
+			return "v1.34.0", nil
+		})
+		defer restore()
+
+		cs := &ClientSet{
+			Name:    "test",
+			Version: "v1.34.0",
+			K8sClient: &kube.K8sClient{
+				ClientSet: &kubernetes.Clientset{},
+			},
+			configSource:      clusterConfigSourceFile,
+			configPath:        configPath,
+			configContext:     "dev",
+			configFingerprint: fingerprint,
+		}
+		cluster := &model.Cluster{
+			Name:          "test",
+			Enable:        true,
+			ConfigSource:  clusterConfigSourceFile,
+			ConfigPath:    configPath,
+			ConfigContext: "dev",
+		}
+		got := shouldUpdateCluster(cs, cluster)
+		assert.False(t, got, "expected no update when file fingerprint is unchanged")
 	})
 }

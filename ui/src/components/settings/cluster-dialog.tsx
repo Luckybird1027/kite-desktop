@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { IconEdit, IconInfoCircle, IconServer } from '@tabler/icons-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { Cluster } from '@/types/api'
 import { ClusterConnectionTestResponse, ClusterCreateRequest } from '@/lib/api'
 import { translateClusterConnectionError } from '@/lib/cluster-connection-errors'
+import { openNativeFile } from '@/lib/desktop'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -45,6 +47,9 @@ function createClusterFormData(cluster?: Cluster | null) {
     name: cluster?.name || '',
     description: cluster?.description || '',
     config: cluster?.config || '',
+    configSource: cluster?.configSource || 'inline',
+    configPath: cluster?.configPath || '',
+    configContext: cluster?.configContext || '',
     prometheusURL: cluster?.prometheusURL || '',
     enabled: cluster?.enabled ?? true,
     isDefault: cluster?.isDefault ?? false,
@@ -94,14 +99,27 @@ function ClusterDialogContent({
     () =>
       JSON.stringify({
         inCluster: formData.inCluster,
+        configSource: formData.configSource,
         config: formData.config.trim(),
+        configPath: formData.configPath.trim(),
+        configContext: formData.configContext.trim(),
         prometheusURL: formData.prometheusURL.trim(),
       }),
-    [formData.inCluster, formData.config, formData.prometheusURL]
+    [
+      formData.inCluster,
+      formData.configSource,
+      formData.config,
+      formData.configPath,
+      formData.configContext,
+      formData.prometheusURL,
+    ]
   )
 
   const canTestConnection =
-    !!onTestConnection && (formData.inCluster || !!formData.config.trim())
+    !!onTestConnection &&
+    (formData.inCluster ||
+      (formData.configSource === 'inline' && !!formData.config.trim()) ||
+      (formData.configSource === 'file' && !!formData.configPath.trim()))
   const isConnectionVerified =
     !isEditMode &&
     testStatus === 'success' &&
@@ -120,7 +138,14 @@ function ClusterDialogContent({
         : String(formData[field as keyof typeof formData])
 
     if (
-      ['config', 'prometheusURL', 'inCluster'].includes(field) &&
+      [
+        'config',
+        'configSource',
+        'configPath',
+        'configContext',
+        'prometheusURL',
+        'inCluster',
+      ].includes(field) &&
       currentValue !== nextValue
     ) {
       setTestStatus('idle')
@@ -163,6 +188,35 @@ function ClusterDialogContent({
       setTestStatus('error')
       setTestMessage(translateClusterConnectionError(error, t))
     }
+  }
+
+  const handlePickKubeconfigFile = async () => {
+    const result = await openNativeFile({
+      title: t(
+        'clusterManagement.form.kubeconfigFile.title',
+        'Select kubeconfig file'
+      ),
+      readContent: false,
+      filters: [
+        {
+          displayName: 'YAML',
+          pattern: '*.yaml;*.yml;config',
+        },
+      ],
+    })
+    if (!result || result.canceled) {
+      return
+    }
+    if (!result.path) {
+      toast.error(
+        t(
+          'clusterManagement.form.kubeconfigFile.pickFailed',
+          'No file path was returned.'
+        )
+      )
+      return
+    }
+    handleChange('configPath', result.path)
   }
 
   return (
@@ -246,6 +300,36 @@ function ClusterDialogContent({
 
         {!formData.inCluster && (
           <div className="space-y-2">
+            <Label htmlFor="cluster-config-source">
+              {t('clusterManagement.form.configSource.label', 'Config Source')}
+            </Label>
+            <Select
+              value={formData.configSource}
+              onValueChange={(value) => handleChange('configSource', value)}
+            >
+              <SelectTrigger id="cluster-config-source">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inline">
+                  {t(
+                    'clusterManagement.form.configSource.inline',
+                    'Paste kubeconfig text'
+                  )}
+                </SelectItem>
+                <SelectItem value="file">
+                  {t(
+                    'clusterManagement.form.configSource.file',
+                    'Use local kubeconfig file'
+                  )}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {!formData.inCluster && formData.configSource === 'inline' && (
+          <div className="space-y-2">
             <Label htmlFor="cluster-config">
               {t('clusterManagement.form.config.label', 'Kubeconfig')}
               {!isEditMode && ' *'}
@@ -270,6 +354,69 @@ function ClusterDialogContent({
               className="text-sm"
               required={!isEditMode && !formData.inCluster}
             />
+          </div>
+        )}
+
+        {!formData.inCluster && formData.configSource === 'file' && (
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="space-y-2">
+              <Label htmlFor="cluster-config-path">
+                {t('clusterManagement.form.kubeconfigFile.path', 'Kubeconfig File')} *
+              </Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="cluster-config-path"
+                  value={formData.configPath}
+                  onChange={(e) => handleChange('configPath', e.target.value)}
+                  placeholder={t(
+                    'clusterManagement.form.kubeconfigFile.placeholder',
+                    'Absolute path to kubeconfig file'
+                  )}
+                />
+                <Button type="button" variant="outline" onClick={handlePickKubeconfigFile}>
+                  {t('clusterManagement.form.kubeconfigFile.browse', 'Browse')}
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor="cluster-config-context">
+                  {t(
+                    'clusterManagement.form.kubeconfigFile.context',
+                    'Kubeconfig Context (optional)'
+                  )}
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-4 w-4 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label={t(
+                        'clusterManagement.form.kubeconfigFile.context',
+                        'Kubeconfig Context (optional)'
+                      )}
+                    >
+                      <IconInfoCircle className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs leading-relaxed">
+                    {t(
+                      'clusterManagement.form.kubeconfigFile.contextHelp',
+                      'Optional. Select a specific context from the kubeconfig file. Leave empty to use current-context.'
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <Input
+                id="cluster-config-context"
+                value={formData.configContext}
+                onChange={(e) => handleChange('configContext', e.target.value)}
+                placeholder={t(
+                  'clusterManagement.form.kubeconfigFile.contextPlaceholder',
+                  'Leave empty to use current-context in file'
+                )}
+              />
+            </div>
           </div>
         )}
 
@@ -412,7 +559,14 @@ function ClusterDialogContent({
             type="submit"
             disabled={
               !formData.name.trim() ||
-              (!isEditMode && !formData.inCluster && !formData.config.trim()) ||
+              (!isEditMode &&
+                !formData.inCluster &&
+                formData.configSource === 'inline' &&
+                !formData.config.trim()) ||
+              (!isEditMode &&
+                !formData.inCluster &&
+                formData.configSource === 'file' &&
+                !formData.configPath.trim()) ||
               (!isEditMode && !isConnectionVerified) ||
               testStatus === 'testing'
             }

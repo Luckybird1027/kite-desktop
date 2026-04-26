@@ -56,6 +56,7 @@ func registerAdminRoutes(r *gin.RouterGroup, cm *cluster.ClusterManager) {
 
 	clusterAPI := adminAPI.Group("/clusters")
 	clusterAPI.POST("/test", cm.TestClusterConnection)
+	clusterAPI.POST("/source-reload", cm.ReloadClusterFromSource)
 	clusterAPI.GET("/", cm.GetClusterList)
 	clusterAPI.POST("/", cm.CreateCluster)
 	clusterAPI.PUT("/:id", cm.UpdateCluster)

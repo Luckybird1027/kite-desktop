@@ -354,6 +354,9 @@ export interface Cluster {
   description?: string
   version?: string
   config?: string
+  configSource?: 'inline' | 'file'
+  configPath?: string
+  configContext?: string
   enabled: boolean
   inCluster: boolean
   isDefault: boolean

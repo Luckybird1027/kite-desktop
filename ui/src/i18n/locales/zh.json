@@ -875,6 +875,8 @@
         "invalidConfig": "kubeconfig 无效或不完整。请检查 cluster、user 和 context 配置。",
         "inClusterUnavailable": "当前环境无法使用 in-cluster 配置。"
       },
+      "sourceReloadReconnected": "检测到 kubeconfig 文件已更新，已自动重连集群。",
+      "sourceReloadFailed": "kubeconfig 文件已变化，但重连失败，请检查本地集群状态。",
       "createError": "创建集群失败",
       "updateError": "更新集群失败",
       "deleteError": "删除集群失败"
@@ -922,8 +924,23 @@
         "label": "Kubeconfig",
         "editNote": "留空将保持当前配置"
       },
+      "configSource": {
+        "label": "配置来源",
+        "inline": "粘贴 kubeconfig 文本",
+        "file": "使用本地 kubeconfig 文件"
+      },
       "kubeconfig": {
         "placeholder": "在此粘贴 kubeconfig 内容..."
+      },
+      "kubeconfigFile": {
+        "title": "选择 kubeconfig 文件",
+        "pickFailed": "未获取到文件路径。",
+        "path": "Kubeconfig 文件",
+        "placeholder": "kubeconfig 文件绝对路径",
+        "browse": "浏览",
+        "context": "Kubeconfig Context（可选）",
+        "contextPlaceholder": "留空将使用文件中的 current-context",
+        "contextHelp": "可选。用于指定 kubeconfig 文件中的某个 context。留空时将使用 current-context。"
       },
       "prometheusURL": {
         "label": "Prometheus URL",

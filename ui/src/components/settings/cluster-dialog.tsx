@@ -379,12 +379,34 @@ function ClusterDialogContent({
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="cluster-config-context">
-                {t(
-                  'clusterManagement.form.kubeconfigFile.context',
-                  'Context (optional)'
-                )}
-              </Label>
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor="cluster-config-context">
+                  {t(
+                    'clusterManagement.form.kubeconfigFile.context',
+                    'Kubeconfig Context (optional)'
+                  )}
+                </Label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-4 w-4 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label={t(
+                        'clusterManagement.form.kubeconfigFile.context',
+                        'Kubeconfig Context (optional)'
+                      )}
+                    >
+                      <IconInfoCircle className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs leading-relaxed">
+                    {t(
+                      'clusterManagement.form.kubeconfigFile.contextHelp',
+                      'Optional. Select a specific context from the kubeconfig file. Leave empty to use current-context.'
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
               <Input
                 id="cluster-config-context"
                 value={formData.configContext}

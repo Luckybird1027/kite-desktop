@@ -3,6 +3,7 @@ import {
   appendClusterNameParam,
   stripClusterNameHeader,
 } from './cluster-transport'
+import i18n from '@/i18n'
 import { withSubPath } from './subpath'
 import { toast } from 'sonner'
 
@@ -171,15 +172,24 @@ class ApiClient {
       }
 
       if (reloadResponse.ok && reloadResponse.reconnected) {
-        toast.success('Detected kubeconfig file update and reconnected cluster.', {
-          id: toastId,
-        })
+        toast.success(
+          i18n.t('clusterManagement.messages.sourceReloadReconnected', {
+            defaultValue:
+              'Detected kubeconfig file update and reconnected cluster.',
+          }),
+          {
+            id: toastId,
+          }
+        )
         return true
       }
 
       toast.warning(
         reloadResponse.error ||
-          'Kubeconfig file changed, but reconnection failed. Please verify your local cluster status.',
+          i18n.t('clusterManagement.messages.sourceReloadFailed', {
+            defaultValue:
+              'Kubeconfig file changed, but reconnection failed. Please verify your local cluster status.',
+          }),
         { id: toastId }
       )
       return false

@@ -1,10 +1,13 @@
 package cluster
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +31,10 @@ type ClientSet struct {
 	DiscoveredPrometheusURL string
 	config                  string
 	prometheusURL           string
+	configSource            string
+	configPath              string
+	configContext           string
+	configFingerprint       string
 }
 
 type ClusterManager struct {
@@ -46,6 +53,11 @@ var (
 		}
 		return version.String(), nil
 	}
+)
+
+const (
+	clusterConfigSourceInline = "inline"
+	clusterConfigSourceFile   = "file"
 )
 
 func createClientSetInCluster(name, prometheusURL string) (*ClientSet, error) {
@@ -70,6 +82,83 @@ func createClientSetFromConfig(name, content, prometheusURL string) (*ClientSet,
 	cs.config = content
 
 	return cs, nil
+}
+
+func normalizeConfigSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", clusterConfigSourceInline:
+		return clusterConfigSourceInline
+	case clusterConfigSourceFile:
+		return clusterConfigSourceFile
+	default:
+		return clusterConfigSourceInline
+	}
+}
+
+func inlineConfigFingerprint(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("inline:%x", sum)
+}
+
+func kubeconfigFileFingerprint(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(
+		"file:%s:%d:%d",
+		absPath,
+		info.ModTime().UnixNano(),
+		info.Size(),
+	), nil
+}
+
+func resolveClusterConfig(cluster *model.Cluster) (string, string, error) {
+	source := normalizeConfigSource(cluster.ConfigSource)
+	if source == clusterConfigSourceInline {
+		content := string(cluster.Config)
+		return content, inlineConfigFingerprint(content), nil
+	}
+
+	if !filepath.IsAbs(cluster.ConfigPath) {
+		return "", "", fmt.Errorf("kubeconfig file path must be absolute")
+	}
+
+	rawContent, err := os.ReadFile(cluster.ConfigPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read kubeconfig file: %w", err)
+	}
+
+	kubeconfig, err := clientcmd.Load(rawContent)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse kubeconfig file: %w", err)
+	}
+
+	configContext := strings.TrimSpace(cluster.ConfigContext)
+	if configContext != "" {
+		if _, ok := kubeconfig.Contexts[configContext]; !ok {
+			return "", "", fmt.Errorf("kubeconfig context %q not found in file", configContext)
+		}
+		kubeconfig.CurrentContext = configContext
+	}
+
+	content, err := clientcmd.Write(*kubeconfig)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to serialize kubeconfig: %w", err)
+	}
+
+	fingerprint, err := kubeconfigFileFingerprint(cluster.ConfigPath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read kubeconfig file metadata: %w", err)
+	}
+
+	return string(content), fingerprint, nil
 }
 
 func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*ClientSet, error) {
@@ -222,9 +311,10 @@ func ImportClustersFromKubeconfig(kubeconfig *clientcmdapi.Config) int64 {
 			continue
 		}
 		cluster := model.Cluster{
-			Name:      contextName,
-			Config:    model.SecretString(configStr),
-			IsDefault: contextName == kubeconfig.CurrentContext,
+			Name:         contextName,
+			Config:       model.SecretString(configStr),
+			ConfigSource: clusterConfigSourceInline,
+			IsDefault:    contextName == kubeconfig.CurrentContext,
 		}
 		if _, err := model.GetClusterByName(contextName); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -346,10 +436,30 @@ func shouldUpdateCluster(cs *ClientSet, cluster *model.Cluster) bool {
 		return true
 	}
 
+	nextSource := normalizeConfigSource(cluster.ConfigSource)
+	currentSource := normalizeConfigSource(cs.configSource)
+	if currentSource != nextSource ||
+		cs.configPath != cluster.ConfigPath ||
+		cs.configContext != strings.TrimSpace(cluster.ConfigContext) {
+		klog.Infof("Cluster config source changed for cluster %s, updating", cluster.Name)
+		return true
+	}
+
 	// kubeconfig change
-	if cs.config != string(cluster.Config) {
+	if nextSource == clusterConfigSourceInline && cs.config != string(cluster.Config) {
 		klog.Infof("Kubeconfig changed for cluster %s, updating", cluster.Name)
 		return true
+	}
+	if nextSource == clusterConfigSourceFile {
+		fingerprint, err := kubeconfigFileFingerprint(cluster.ConfigPath)
+		if err != nil {
+			klog.Warningf("Failed to read kubeconfig file metadata for cluster %s: %v", cluster.Name, err)
+			return true
+		}
+		if cs.configFingerprint != fingerprint {
+			klog.Infof("Kubeconfig file changed for cluster %s, updating", cluster.Name)
+			return true
+		}
 	}
 
 	// prometheus URL change
@@ -376,7 +486,24 @@ func buildClientSet(cluster *model.Cluster) (*ClientSet, error) {
 	if cluster.InCluster {
 		return createClientSetInClusterFunc(cluster.Name, cluster.PrometheusURL)
 	}
-	return createClientSetFromConfigFunc(cluster.Name, string(cluster.Config), cluster.PrometheusURL)
+
+	resolvedConfig, fingerprint, err := resolveClusterConfig(cluster)
+	if err != nil {
+		return nil, formatClusterConnectionError(err)
+	}
+
+	cs, err := createClientSetFromConfigFunc(cluster.Name, resolvedConfig, cluster.PrometheusURL)
+	if err != nil {
+		return nil, err
+	}
+
+	cs.config = resolvedConfig
+	cs.configSource = normalizeConfigSource(cluster.ConfigSource)
+	cs.configPath = cluster.ConfigPath
+	cs.configContext = strings.TrimSpace(cluster.ConfigContext)
+	cs.configFingerprint = fingerprint
+
+	return cs, nil
 }
 
 func NewClusterManager() (*ClusterManager, error) {

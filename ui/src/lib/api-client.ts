@@ -4,6 +4,7 @@ import {
   stripClusterNameHeader,
 } from './cluster-transport'
 import { withSubPath } from './subpath'
+import { toast } from 'sonner'
 
 export interface APIErrorOptions {
   code?: string
@@ -28,6 +29,7 @@ export class APIError extends Error {
 class ApiClient {
   private baseUrl: string = ''
   private getCurrentCluster: (() => string | null) | null = null
+  private reloadInFlight = new Set<string>()
 
   constructor(baseUrl: string = '') {
     this.baseUrl = baseUrl
@@ -39,7 +41,8 @@ class ApiClient {
 
   private async makeRequest<T>(
     url: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    canAutoRecover: boolean = true
   ): Promise<T> {
     const fullUrl = withSubPath(this.baseUrl + url)
 
@@ -96,8 +99,96 @@ class ApiClient {
         return (await response.text()) as T
       }
     } catch (error) {
+      if (
+        canAutoRecover &&
+        this.shouldTryClusterSourceReload(url, error) &&
+        (await this.tryReloadClusterFromSource())
+      ) {
+        return this.makeRequest<T>(url, options, false)
+      }
+
       console.error('API request failed:', error)
       throw error
+    }
+  }
+
+  private shouldTryClusterSourceReload(url: string, error: unknown): boolean {
+    if (!(error instanceof APIError)) {
+      return false
+    }
+    if (!this.getCurrentCluster?.()) {
+      return false
+    }
+    if (url.includes('/admin/clusters/source-reload')) {
+      return false
+    }
+    if (error.status !== 500 && error.status !== 502 && error.status !== 503 && error.status !== 504) {
+      return false
+    }
+
+    const message = (error.detail || error.message || '').toLowerCase()
+    return (
+      message.includes('connection refused') ||
+      message.includes('context deadline exceeded') ||
+      message.includes('no such host') ||
+      message.includes('i/o timeout') ||
+      message.includes('tls handshake timeout') ||
+      message.includes('x509:') ||
+      message.includes('eof')
+    )
+  }
+
+  private async tryReloadClusterFromSource(): Promise<boolean> {
+    const clusterName = this.getCurrentCluster?.()
+    if (!clusterName) {
+      return false
+    }
+    if (this.reloadInFlight.has(clusterName)) {
+      return false
+    }
+
+    this.reloadInFlight.add(clusterName)
+    const toastId = `cluster-source-reload-${clusterName}`
+
+    try {
+      const reloadResponse = await this.makeRequest<{
+        ok: boolean
+        changed: boolean
+        reconnected?: boolean
+        message?: string
+        error?: string
+      }>(
+        '/admin/clusters/source-reload',
+        {
+          method: 'POST',
+          body: JSON.stringify({ name: clusterName }),
+        },
+        false
+      )
+
+      if (!reloadResponse.changed) {
+        return false
+      }
+
+      if (reloadResponse.ok && reloadResponse.reconnected) {
+        toast.success('Detected kubeconfig file update and reconnected cluster.', {
+          id: toastId,
+        })
+        return true
+      }
+
+      toast.warning(
+        reloadResponse.error ||
+          'Kubeconfig file changed, but reconnection failed. Please verify your local cluster status.',
+        { id: toastId }
+      )
+      return false
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      toast.warning(message, { id: toastId })
+      return false
+    } finally {
+      this.reloadInFlight.delete(clusterName)
     }
   }
 

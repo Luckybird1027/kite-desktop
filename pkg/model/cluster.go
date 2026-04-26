@@ -5,6 +5,9 @@ type Cluster struct {
 	Name          string       `json:"name" gorm:"type:varchar(100);uniqueIndex;not null"`
 	Description   string       `json:"description" gorm:"type:text"`
 	Config        SecretString `json:"config" gorm:"type:text"`
+	ConfigSource  string       `json:"configSource" gorm:"type:varchar(20);default:inline"`
+	ConfigPath    string       `json:"configPath" gorm:"type:text"`
+	ConfigContext string       `json:"configContext" gorm:"type:varchar(255)"`
 	PrometheusURL string       `json:"prometheus_url,omitempty" gorm:"type:varchar(255)"`
 	InCluster     bool         `json:"in_cluster" gorm:"type:boolean;default:false"`
 	IsDefault     bool         `json:"is_default" gorm:"type:boolean;default:false"`

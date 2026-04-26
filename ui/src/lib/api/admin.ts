@@ -18,6 +18,9 @@ export interface ClusterCreateRequest {
   name: string
   description?: string
   config?: string
+  configSource?: 'inline' | 'file'
+  configPath?: string
+  configContext?: string
   prometheusURL?: string
   inCluster?: boolean
   isDefault?: boolean
@@ -30,6 +33,15 @@ export interface ClusterUpdateRequest extends ClusterCreateRequest {
 export interface ClusterConnectionTestResponse {
   message: string
   version?: string
+}
+
+export interface ClusterSourceReloadResponse {
+  ok: boolean
+  changed: boolean
+  reconnected?: boolean
+  version?: string
+  message?: string
+  error?: string
 }
 
 const clusterConnectionTestTimeoutMs = 15_000
@@ -89,6 +101,15 @@ export const testClusterConnection = async (
   } finally {
     globalThis.clearTimeout(timeoutId)
   }
+}
+
+export const reloadClusterFromSource = async (
+  name: string
+): Promise<ClusterSourceReloadResponse> => {
+  return await apiClient.post<ClusterSourceReloadResponse>(
+    '/admin/clusters/source-reload',
+    { name }
+  )
 }
 
 // Update cluster
